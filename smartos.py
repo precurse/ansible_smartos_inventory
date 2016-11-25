@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import argparse
+import collections
 import sys
 import os
 import logging
@@ -113,24 +114,32 @@ def to_json(in_dict):
 def main():
     args = parse_args()
 
-    get_ansible_json_from_ssh()
+    output = get_ansible_json_from_ssh()
 
+    print(output)
     sys.exit(0)
 
 def get_ansible_json_from_ssh():
     vm_json = get_vmadm_list_from_ssh()
 
-    groups = []
+    groups = collections.defaultdict(list)
+    firstpass = collections.defaultdict(list)
+    hostvars = {}
+
 
     for server in vm_json:
         try:
-            groups.append(server['hostname'])
+            firstpass[server['hostname']].append(server)
         except KeyError as e:
             # No hostname var, use alias
-            groups.append(server['alias'])
+            firstpass[server['alias']].append(server)
 
-    for g in groups:
-        print(g)
+    for name, server in firstpass.items():
+       hostvars[name] = dict(ansible_ssh_host=server[0]['nics'][0]['ip'],smartos=server)
+
+    groups['_meta'] = {'hostvars': hostvars}
+
+    return groups
 
 if __name__ == '__main__':
     main()

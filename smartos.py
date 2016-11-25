@@ -116,7 +116,7 @@ def main():
 
     output = get_ansible_json_from_ssh()
 
-    print(output)
+    print(to_json(output))
     sys.exit(0)
 
 def get_ansible_json_from_ssh():
@@ -134,10 +134,16 @@ def get_ansible_json_from_ssh():
             # No hostname var, use alias
             firstpass[server['alias']].append(server)
 
+
+    groups['smartos'] = []
+
     for name, server in firstpass.items():
        hostvars[name] = dict(ansible_ssh_host=server[0]['nics'][0]['ip'],smartos=server)
+       groups['smartos'].append(name)
 
     groups['_meta'] = {'hostvars': hostvars}
+
+
 
     return groups
 

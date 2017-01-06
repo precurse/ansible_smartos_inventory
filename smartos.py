@@ -14,6 +14,7 @@ except:
 try:
     import paramiko
     __PARAMIKO_NOT_IMPORTED__ = False
+    import subprocess
 except:
     # Import subprocess for ssh
     import subprocess
@@ -22,6 +23,9 @@ except:
 __DEFAULT_SSH_EXEC__ = 'ssh'
 __DEFAULT_SSH_USER__ = 'root'
 __DEFAULT_SSH_KEY__ = '~/.ssh/id_rsa'
+__DEFAULT_SSH_HOST__ = '10.0.3.2'
+
+CONFIG_LOCATIONS = ['/etc/ansible/smartos.ini', '/etc/ansible/smartos.ini']
 
 def get_vmadm_list_from_ssh():
     """
@@ -31,11 +35,12 @@ def get_vmadm_list_from_ssh():
 
     if __PARAMIKO_NOT_IMPORTED__:
         # Use ssh command
-        ssh_cmd = get_ssh_cmd_from_paths()
-        ret_raw_json = subprocess.check_output([__DEFAULT_SSH_EXEC__, "root@10.0.3.2", "vmadm lookup -j"], universal_newlines=True)
+        ssh_cmd = find_ssh_exec_from_paths()
+        ret_raw_json = subprocess.check_output([__DEFAULT_SSH_EXEC__, "{}@{}".format(__DEFAULT_SSH_USER__,__DEFAULT_SSH_HOST__), "vmadm lookup -j"], universal_newlines=True)
     else:
         # Use paramiko module
-        pass
+        ssh_cmd = find_ssh_exec_from_paths()
+        ret_raw_json = subprocess.check_output([__DEFAULT_SSH_EXEC__, "{}@{}".format(__DEFAULT_SSH_USER__,__DEFAULT_SSH_HOST__), "vmadm lookup -j"], universal_newlines=True)
 
     # Check that we have valid json
     try:
@@ -52,11 +57,11 @@ def get_vmadm_host_from_ssh(hostname):
     """
     smartos_vmadm_cmd = 'vmadm lookup -j { hostname }'
 
-def get_ssh_cmd_from_paths(check_cwd=True):
+def find_ssh_exec_from_paths(check_cwd=True):
     """
-        Finds ssh executable from cwd and system PATHS
+        Finds ssh executable from current working directory followed by system PATHS
 
-        Returns full path of first found ssh executable
+        Returns full path of first found ssh executable starting with cwd
     """
 
     exec_file = __DEFAULT_SSH_EXEC__

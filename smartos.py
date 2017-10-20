@@ -5,6 +5,7 @@ import collections
 import sys
 import os
 import logging
+import yaml
 
 try:
     import json
@@ -20,42 +21,163 @@ except:
     import subprocess
     __PARAMIKO_NOT_IMPORTED__ = True
 
-__DEFAULT_SSH_EXEC__ = 'ssh'
-__DEFAULT_SSH_USER__ = 'root'
-__DEFAULT_SSH_KEY__ = '~/.ssh/id_rsa'
-__DEFAULT_SSH_HOST__ = '10.0.3.2'
+class SmartOSInventory(object):
 
-CONFIG_LOCATIONS = ['/etc/ansible/smartos.ini', '/etc/ansible/smartos.ini']
+    def __init__(self):
+        # SmartOS SSH Commands
+        self._sshcmd_list = 'vmadm lookup -j'
+        self._sshcmd_host = 'vmadm lookup -j hostname={hostname}'
 
-def get_vmadm_list_from_ssh():
-    """
-        Returns list of all VMs in valid JSON from SSH host
-    """
-    smartos_vmadm_cmd = 'vmadm lookup -j'
+        # Start with empty inventory
+        self.inventory = {"_meta": {"hostvars": {}}}
 
-    if __PARAMIKO_NOT_IMPORTED__:
-        # Use ssh command
-        ssh_cmd = find_ssh_exec_from_paths()
-        ret_raw_json = subprocess.check_output([__DEFAULT_SSH_EXEC__, "{}@{}".format(__DEFAULT_SSH_USER__,__DEFAULT_SSH_HOST__), "vmadm lookup -j"], universal_newlines=True)
-    else:
-        # Use paramiko module
-        ssh_cmd = find_ssh_exec_from_paths()
-        ret_raw_json = subprocess.check_output([__DEFAULT_SSH_EXEC__, "{}@{}".format(__DEFAULT_SSH_USER__,__DEFAULT_SSH_HOST__), "vmadm lookup -j"], universal_newlines=True)
+        self._parse_args()
+        self._parse_settings()
 
-    # Check that we have valid json
-    try:
-        ret_json = json.loads(ret_raw_json)
-    except ValueError as e:
-        logging.info("Invalid JSON returned from ssh server")
-        sys.exit(1)
+        if self.args.debug:
+            logging.basicConfig(level=logging.DEBUG)
 
-    return ret_json
+        # Check if we to get hostvars on a single host
+        if __PARAMIKO_NOT_IMPORTED__:
+            logging.debug("Using raw SSH")
+            self._get_json_from_ssh()
+        else:
+            logging.debug("Using paramiko for SSH")
+            self._get_json_from_paramiko()
 
-def get_vmadm_host_from_ssh(hostname):
-    """
-        Returns valid json with of VM
-    """
-    smartos_vmadm_cmd = 'vmadm lookup -j { hostname }'
+        self._do_inventory()
+
+        print(json.dumps(self.inventory, sort_keys=True, indent=2))
+
+    def _get_json_from_ssh(self):
+        ''' Get single host's raw smartos json from ssh subprocess '''
+        logging.debug("Using SSH to get single host json")
+
+        ssh_cmd = ["ssh", self._hypervisor_user + "@" + self._hypervisor_host, \
+                "-p", str(self._hypervisor_port), self._sshcmd]
+        output = subprocess.check_output(ssh_cmd, universal_newlines=True)
+
+        try:
+            self._parsed_json = json.loads(output)
+        except ValueError as e:
+            logging.info("Invalid JSON returned from ssh server")
+            sys.exit(1)
+
+    def _get_json_from_paramiko(self):
+        ''' Gets raw json from paramiko '''
+
+        logging.debug("Using paramiko to get json data")
+
+        try:
+            self._paramiko_connect()
+            stdin, stdout, stderr = self._ssh.exec_command(self._sshcmd)
+
+            stdout=stdout.readlines()
+
+        finally:
+            logging.debug("Closing paramiko ssh connection")
+            self._paramiko_close()
+
+        # Put raw output into a usable string
+        output=""
+        for line in stdout:
+            output=output+line
+
+        # Parse raw json
+        try:
+            self._parsed_json = json.loads(output)
+        except ValueError as e:
+            logging.error(e)
+            sys.exit(1)
+
+    def _paramiko_connect(self):
+        ''' Sets up SSH connection with Paramiko '''
+
+        try:
+            logging.debug("Starting paramiko SSH client")
+            self._ssh = paramiko.SSHClient()
+
+            logging.debug("Loading Paramiko SSH host keys")
+            self._ssh.load_system_host_keys()
+
+            logging.debug("Connecting to SSH with Paramiko")
+            self._ssh.connect(self._hypervisor_host, port=self._hypervisor_port, \
+                    username=self._hypervisor_user, \
+                    key_filename=self._hypervisor_key)
+
+        except Exception as e:
+            logging.error(e)
+
+    def _paramiko_close(self):
+        ''' Terminates Paramiko SSH connection '''
+
+        self._ssh.close()
+
+    def _do_inventory(self):
+        ''' Takes the fetched json and populates the inventory '''
+
+        groups = collections.defaultdict(list)
+        firstpass = collections.defaultdict(list)
+
+        # Hostvars for all servers
+        hostvars = {}
+
+        self.inventory['smartos'] =  []
+        self.inventory['joyent'] = []
+        self.inventory['lx'] = []
+        self.inventory['kvm'] = []
+
+        # Parse server's json blob and extract hostname
+        for server in self._parsed_json:
+            try:
+                firstpass[server['hostname']].append(server)
+                logging.debug("Finished first pass of {}".format(server['hostname']))
+
+            except KeyError as e:
+                logging.debug("No hostname found. Using alias {}".format(server['alias']))
+                firstpass[server['alias']].append(server)
+
+        for name, vars in firstpass.items():
+            # TODO: Set ansible_ssh_host based of valid subnets on host running Ansible
+            hostvars[name] = dict(ansible_ssh_host=vars[0]['nics'][0]['ip'],smartos=vars[0])
+            self.inventory['smartos'].append(name)
+            if hostvars[name]['smartos']['brand'] == 'lx':
+                self.inventory['lx'].append(name)
+            elif hostvars[name]['smartos']['brand'] == 'kvm':
+                self.inventory['kvm'].append(name)
+            elif hostvars[name]['smartos']['brand'] == 'joyent':
+                self.inventory['joyent'].append(name)
+
+        self.inventory['_meta'] = hostvars
+
+    def _parse_settings(self):
+        SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+        CONFIG_LOCATIONS = ['/etc/ansible/smartos.yml', '/etc/ansible/smartos.yaml', SCRIPT_DIR + '/smartos.yml', SCRIPT_DIR + '/smartos.yaml']
+
+        self._hypervisor_host = '10.0.3.2'
+        self._hypervisor_port = 22
+        self._hypervisor_key = '/home/piranha/.ssh/id_rsa'
+        self._hypervisor_user = 'root'
+
+        # Set SSH command based on config
+        if self.args.host:
+            self._sshcmd = self._sshcmd_host.format(hostname=self.args.host)
+        else:
+            self._sshcmd = self._sshcmd_list
+
+    def _parse_args(self):
+        ''' Parse command line arguments '''
+
+        parser = argparse.ArgumentParser(description='SmartOS Inventory Module')
+        parser.add_argument('--debug', action='store_true', default=False,
+                            help='Enable debug output')
+        group = parser.add_mutually_exclusive_group(required=True)
+        group.add_argument('--list', action='store_true',
+                           help='List active servers')
+        group.add_argument('--host', help='List details about the specific host')
+
+        self.args = parser.parse_args()
+
 
 def find_ssh_exec_from_paths(check_cwd=True):
     """
@@ -102,55 +224,9 @@ def is_exec_in_path(exec_file, path=None):
     return found
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='SmartOS Inventory Module')
-    parser.add_argument('--debug', action='store_true', default=False,
-                        help='Enable debug output')
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--list', action='store_true',
-                       help='List active servers')
-    group.add_argument('--host', help='List details about the specific host')
-
-    return parser.parse_args()
-
 def to_json(in_dict):
     return json.dumps(in_dict, sort_keys=True, indent=2)
 
-def main():
-    args = parse_args()
-
-    output = get_ansible_json_from_ssh()
-
-    print(to_json(output))
-    sys.exit(0)
-
-def get_ansible_json_from_ssh():
-    vm_json = get_vmadm_list_from_ssh()
-
-    groups = collections.defaultdict(list)
-    firstpass = collections.defaultdict(list)
-    hostvars = {}
-
-
-    for server in vm_json:
-        try:
-            firstpass[server['hostname']].append(server)
-        except KeyError as e:
-            # No hostname var, use alias
-            firstpass[server['alias']].append(server)
-
-
-    groups['smartos'] = []
-
-    for name, server in firstpass.items():
-       hostvars[name] = dict(ansible_ssh_host=server[0]['nics'][0]['ip'],smartos=server)
-       groups['smartos'].append(name)
-
-    groups['_meta'] = {'hostvars': hostvars}
-
-
-
-    return groups
 
 if __name__ == '__main__':
-    main()
+    SmartOSInventory()

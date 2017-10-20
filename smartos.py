@@ -122,11 +122,6 @@ class SmartOSInventory(object):
         # Hostvars for all servers
         hostvars = {}
 
-        self.inventory['smartos'] =  []
-        self.inventory['joyent'] = []
-        self.inventory['lx'] = []
-        self.inventory['kvm'] = []
-
         # Parse server's json blob and extract hostname
         for server in self._parsed_json:
             try:
@@ -139,16 +134,40 @@ class SmartOSInventory(object):
 
         for name, vars in firstpass.items():
             # TODO: Set ansible_ssh_host based of valid subnets on host running Ansible
-            hostvars[name] = dict(ansible_ssh_host=vars[0]['nics'][0]['ip'],smartos=vars[0])
-            self.inventory['smartos'].append(name)
-            if hostvars[name]['smartos']['brand'] == 'lx':
-                self.inventory['lx'].append(name)
-            elif hostvars[name]['smartos']['brand'] == 'kvm':
-                self.inventory['kvm'].append(name)
-            elif hostvars[name]['smartos']['brand'] == 'joyent':
-                self.inventory['joyent'].append(name)
+            ansible_host = vars[0]['nics'][0]['ip']
 
-        self.inventory['_meta'] = hostvars
+            hostvars[name] = dict(ansible_host=ansible_host, \
+                    ansible_ssh_host=ansible_host,smartos=vars[0])
+
+            # Hypervisor Grouping
+            try:
+                self.inventory['smartos'].append(name)
+            except KeyError:
+                self.inventory['smartos'] = [name]
+
+            # Brand grouping
+            try:
+                brand = vars[0]['brand']
+
+                try:
+                    self.inventory[brand].append(name)
+                except KeyError:
+                    self.inventory[brand] = [name]
+
+            except Exception as e:
+                logging.error("No brand found in {}".format(name))
+
+            # Vlan grouping
+            try:
+                vlan = str(vars[0]['nics'][0]['vlan_id'])
+                try:
+                    self.inventory['vlan_' + vlan].append(name)
+                except KeyError:
+                    self.inventory['vlan_' + vlan] = [name]
+            except KeyError:
+                pass
+
+        self.inventory['_meta']['hostvars'] = hostvars
 
     def _parse_settings(self):
         SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -177,56 +196,6 @@ class SmartOSInventory(object):
         group.add_argument('--host', help='List details about the specific host')
 
         self.args = parser.parse_args()
-
-
-def find_ssh_exec_from_paths(check_cwd=True):
-    """
-        Finds ssh executable from current working directory followed by system PATHS
-
-        Returns full path of first found ssh executable starting with cwd
-    """
-
-    exec_file = __DEFAULT_SSH_EXEC__
-
-    if check_cwd:
-        ssh_paths = [os.getcwd()]  # Check current directory FIRST
-    else:
-        ssh_paths = []
-
-    ssh_paths.extend(os.environ["PATH"].split(':'))
-
-    logging.debug("Found paths {}".format(str(ssh_paths)))
-
-    for path in ssh_paths:
-        if is_exec_in_path(exec_file, path):
-            # Found exec
-            full_path = os.path.join(path, exec_file)
-            break
-
-    return full_path
-
-def is_exec_in_path(exec_file, path=None):
-
-    found = False
-
-    if path is None:
-        full_path = exec_file
-    else:
-        full_path = os.path.join(path, exec_file)
-
-    if os.path.isfile(full_path):
-        # Verify file is executable
-        if os.access(full_path, os.X_OK):
-            found = True
-
-    logging.debug("Found exec: {} at {}".format(exec_file, full_path))
-
-    return found
-
-
-def to_json(in_dict):
-    return json.dumps(in_dict, sort_keys=True, indent=2)
-
 
 if __name__ == '__main__':
     SmartOSInventory()

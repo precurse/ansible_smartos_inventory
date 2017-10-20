@@ -10,6 +10,7 @@ More about Ansible dynamic inventory here: http://docs.ansible.com/ansible/lates
 
 Things that still need to be tweaked:
 - Implement a configuration file. Currently the SmartOS host needs to be hardcoded in the script.
+- Only SSH keys are currently working. Would be nice to have passwords work as well.
 - Check all NICs on an instance to see which one is accessible via the Ansible host.
  Currently, the very first NIC IP is used.
-- Group human redable image names.
+- Group human redable image names. Need to pull `imgadm` data as well to parse.
